@@ -24,16 +24,18 @@ def increment_post_impressions(post_id):
 
 
 @shared_task
-def increment_post_views_task(slug, ip_address):
+def increment_post_views_task(slug, ip_address, user=None):
     """
     Incrementa las vistas de un post.
     """
     try:
         post = Post.objects.get(slug=slug)
         post_analytics, _ = PostAnalytics.objects.get_or_create(post=post)
-        post_analytics.increment_view(ip_address)
+        post_analytics.increment_view(ip_address , user=user)
+    except Post.DoesNotExist:
+        logger.error(f"Post with slug {slug} does not exist.")
     except Exception as e:
-        logger.info(f"Error incrementing views for Post slug {slug}: {str(e)}")
+        logger.error(f"Error incrementing views for Post slug {slug}: {str(e)}")
 
 
 @shared_task

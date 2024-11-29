@@ -44,11 +44,21 @@ class UserAccountManager(BaseUserManager):
         user.is_superuser = True
         user.is_staff = True
         user.is_active = True
+        user.role = 'admin'
         user.save(using=self._db)
         return user
     
 
 class UserAccount(AbstractBaseUser, PermissionsMixin):
+
+    roles = (
+        ("customer", "Customer"),
+        ("seller", "Seller"),
+        ("admin", "Admin"),
+        ("moderator", "Moderator"),
+        ("helper", "Helper"),
+        ("editor", "Editor"),
+    )
 
     id = models.UUIDField(default=uuid.uuid4, unique=True, primary_key=True)
     email = models.EmailField(unique=True)
@@ -59,6 +69,9 @@ class UserAccount(AbstractBaseUser, PermissionsMixin):
 
     created_at = models.DateTimeField(default=timezone.now)
     updated_at = models.DateTimeField(auto_now=True)
+
+    role = models.CharField(max_length=20, choices=roles, default="customer")
+    verified = models.BooleanField(default=False)
 
     is_active = models.BooleanField(default=False)
     is_staff = models.BooleanField(default=False)
@@ -80,7 +93,7 @@ class UserAccount(AbstractBaseUser, PermissionsMixin):
     REQUIRED_FIELDS = ["username", "first_name", "last_name"]
 
     def __str__(self):
-        return self.email
+        return self.username
 
     def get_qr_code(self):
         if self.qr_code and hasattr(self.qr_code, "url"):
