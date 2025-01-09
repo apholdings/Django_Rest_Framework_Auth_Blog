@@ -8,6 +8,7 @@ urlpatterns = [
     path('api/profile/', include("apps.user_profile.urls")),
     path('api/blog/', include('apps.blog.urls')),
     path('api/media/', include('apps.media.urls')),
+    path('api/newsletter/', include('apps.newsletter.urls')),
     
     path("auth/", include("djoser.urls")),
     path("auth/", include("djoser.urls.jwt")),

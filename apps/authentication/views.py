@@ -1,26 +1,50 @@
 from io import BytesIO
 from datetime import timedelta
 
-from rest_framework_api.views import StandardAPIView
+from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework import status
 from rest_framework import permissions
+from rest_framework_api.views import StandardAPIView
 from django.contrib.auth import get_user_model
 from django.contrib.auth.hashers import make_password
 from django.core.files.base import ContentFile
 from django.utils.crypto import get_random_string
 from django.utils import timezone
 from django.utils.timezone import now
+from django.core.mail import send_mail
+from django.contrib.sites.models import Site
 import pyotp
 import qrcode
 
-from rest_framework_simplejwt.tokens import RefreshToken
-from rest_framework import status
-
-
 from core.permissions import HasValidAPIKey
 from utils.ip_utils import get_client_ip
+from utils.string_utils import sanitize_string, sanitize_username
+
 
 User = get_user_model()
 
+
+class UpdateUserInformationView(StandardAPIView):
+    permission_classes = [permissions.IsAuthenticated, HasValidAPIKey]
+
+    def put(self, request):
+        user = request.user
+
+        username = request.data.get("username", None)
+        first_name = request.data.get("first_name", None)
+        last_name = request.data.get("last_name", None)
+
+        if username:
+            user.username = sanitize_username(username)
+        if first_name:
+            user.first_name = sanitize_string(first_name)
+        if last_name:
+            user.last_name = sanitize_string(last_name)
+
+        user.save()
+
+        return self.response("User information updated successfully")
+    
 
 class GenerateQRCodeView(StandardAPIView):
     permission_classes = [permissions.IsAuthenticated, HasValidAPIKey]
@@ -185,3 +209,69 @@ class OTPLoginView(StandardAPIView):
 
         except User.DoesNotExist:
             return self.response("User does not exist.", status=status.HTTP_404_NOT_FOUND)
+        
+
+class SendOTPLoginView(StandardAPIView):
+    permission_classes = [HasValidAPIKey]
+
+    def post(self, request):
+        email = request.data.get('email')
+
+        # Verificar que existe un suario con ese email y que eestaa activo
+        try:
+            user = User.objects.get(email=email, is_active=True)
+        except User.DoesNotExist:
+            return self.error("User does not exist or is not active.")
+        
+        # Generar OTP
+        secret = pyotp.random_base32()
+        user.otp_secret = secret
+        user.save()
+
+        totp = pyotp.TOTP(secret)
+        otp = totp.now()
+
+        # Enviar correo con OTP
+        # Obtener el dominio del sitio configurado
+        site = Site.objects.get_current()
+        domain = site.domain
+
+        send_mail(
+            'Your OTP Code',
+            f'Your OTP code is {otp}',
+            f'noreply@{domain}',
+            [email],
+            fail_silently=False,
+        )
+
+        return self.response("OTP sent successfully.")
+
+
+class VerifyOTPLoginView(StandardAPIView):
+    permission_classes = [HasValidAPIKey]
+
+    def post(self, request):
+        email = request.data.get('email')
+        otp_code = request.data.get('otp')
+
+        if not email or not otp_code:
+            return self.error("Both email and OTP code are required.")
+
+        # Verificar que existe un suario con ese email y que eestaa activo
+        try:
+            user = User.objects.get(email=email, is_active=True)
+        except User.DoesNotExist:
+            return self.error("User does not exist or is not active.")
+        
+        # Generar OTP
+        totp = pyotp.TOTP(user.otp_secret)
+
+        if totp.verify(otp_code):
+            # Generar tokens JWT
+            refresh = RefreshToken.for_user(user)
+            return self.response({
+                "access": str(refresh.access_token), 
+                "refresh": str(refresh)
+            })
+
+        return self.error("Error verifying OTP code.")

@@ -9,4 +9,18 @@ class UserProfileSerializer(serializers.ModelSerializer):
     banner_picture = MediaSerializer()
     class Meta:
         model = UserProfile
-        fields = "__all__"
+        fields = [
+            'profile_picture',
+            'banner_picture',
+            'biography',
+            'birthday',
+            'website',
+            'instagram',
+            'facebook',
+            'threads',
+            'linkedin',
+            'youtube',
+            'tiktok',
+            'github',
+            'gitlab',
+        ]

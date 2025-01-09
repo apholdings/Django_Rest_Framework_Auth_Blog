@@ -8,6 +8,7 @@ from django.contrib.auth.models import (
     BaseUserManager
 )
 
+from utils.string_utils import sanitize_username
 
 class UserAccountManager(BaseUserManager):
 
@@ -25,8 +26,16 @@ class UserAccountManager(BaseUserManager):
         first_name = extra_fields.get("first_name", None)
         last_name = extra_fields.get("last_name", None)
 
-        if not first_name or not last_name:
-            raise ValueError("Users must have a first name and last name")
+        # Validar y sanitizar el nombre de usuario
+        username = extra_fields.get("username", None)
+        if username:
+            sanitized_username = sanitize_username(username)
+
+            # Verificar si el nombre de usuario está en la lista de restringidos
+            if sanitized_username.lower() in self.RESTRICTED_USERNAMES:
+                raise ValueError(f"The username '{sanitized_username}' is not allowed.")
+            
+            user.username = sanitized_username
         
         user.first_name = first_name
         user.last_name = last_name
@@ -80,6 +89,7 @@ class UserAccount(AbstractBaseUser, PermissionsMixin):
     two_factor_enabled = models.BooleanField(default=False)
     otpauth_url = models.CharField(max_length=225, blank=True, null=True)
     otp_base32 = models.CharField(max_length=255, null=True)
+    otp_secret = models.CharField(max_length=255, null=True)
     qr_code = models.ImageField(upload_to="qrcode/", blank=True, null=True)
     login_otp = models.CharField(max_length=255, null=True, blank=True)
     login_otp_used = models.BooleanField(default=False)

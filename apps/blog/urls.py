@@ -16,7 +16,10 @@ from .views import (
     CommentReplyViews,
     PostLikeViews,
     PostShareView,
-    PostAuthorViews
+    PostAuthorViews,
+    DetailPostView,
+    CategoriesListView,
+    DetailCategoryView
 )
 
 urlpatterns = [
@@ -26,7 +29,9 @@ urlpatterns = [
     path('post/', PostDetailView.as_view(), name='post-detail'),
     path('post/headings/', PostHeadingsView.as_view(), name='post-headings'),
     path('post/increment_click/', IncrementPostClickView.as_view(), name='increment-post-click'),
+    path('category/', DetailCategoryView.as_view(), name='category-detail'),
     path('categories/', CategoryListView.as_view(), name='category-list'),
+    path('categories/list/', CategoriesListView.as_view()),
     path('category/posts/', CategoryDetailView.as_view(), name='category-posts'),
     path('category/increment_click/', IncrementCategoryClickView.as_view(), name='increment-category-click'),
     path('post/comment/', PostCommentViews.as_view()),
@@ -36,4 +41,5 @@ urlpatterns = [
     path('post/like/', PostLikeViews.as_view()),
     path('post/share/', PostShareView.as_view()),
     path('post/author/', PostAuthorViews.as_view()),
+    path('post/get/', DetailPostView.as_view()),
 ]

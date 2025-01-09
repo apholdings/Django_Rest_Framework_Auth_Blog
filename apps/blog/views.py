@@ -1,13 +1,17 @@
 from rest_framework_api.views import StandardAPIView
 from rest_framework.exceptions import NotFound, APIException, ValidationError
-from rest_framework import permissions
+from rest_framework import permissions, status
 from django.conf import settings
 from django.utils.decorators import method_decorator
 from django.views.decorators.cache import cache_page
 from django.core.cache import cache
-from django.db.models import Q, F, Prefetch
+from django.db.models import Q, F, Prefetch, Value
+from django.db.models.functions import Coalesce
 from django.shortcuts import get_object_or_404
 import redis
+from pprint import pprint
+from bs4 import BeautifulSoup
+
 
 from core.permissions import HasValidAPIKey
 from .models import (
@@ -22,7 +26,7 @@ from .models import (
     PostLike,
     PostShare
 )
-from .serializers import PostListSerializer, PostSerializer, HeadingSerializer, CategoryListSerializer, CommentSerializer
+from .serializers import CategorySerializer, PostListSerializer, PostSerializer, HeadingSerializer, CategoryListSerializer, CommentSerializer
 from utils.ip_utils import get_client_ip
 from apps.authentication.models import UserAccount
 from apps.media.models import Media
@@ -36,6 +40,64 @@ from django.utils.text import slugify
 
 redis_client = redis.StrictRedis(host=settings.REDIS_HOST, port=6379, db=0)
 
+
+class CategoriesListView(StandardAPIView):
+    permission_classes = [HasValidAPIKey]
+
+    def get(self,request):
+
+        categories = Category.objects.all()
+
+        serialized_categories = CategoryListSerializer(categories, many=True).data
+
+        return self.response(serialized_categories)
+    
+
+class DetailCategoryView(StandardAPIView):
+    permission_classes = [HasValidAPIKey]
+
+    def get(self, request):
+        """
+        Obtener la informacion de una categoria
+        """
+
+        slug = request.query_params.get('slug', None)
+
+        if not slug:
+            raise ValueError("Slug parameter must be provided")
+
+        try:
+            category = Category.objects.get(slug=slug)
+        except Category.DoesNotExist:
+            raise NotFound(detail=f"No category found for {slug}")
+        
+        serialized_category = CategorySerializer(category).data
+
+        return self.response(serialized_category)
+
+
+class DetailPostView(StandardAPIView):
+    permission_classes = [HasValidAPIKey]
+
+    def get(self, request):
+        """
+        Obtener la informacion de un post
+        """
+
+        slug = request.query_params.get('slug', None)
+
+        if not slug:
+            raise ValueError("Slug parameter must be provided")
+
+        try:
+            post = Post.objects.get(slug=slug)
+        except Post.DoesNotExist:
+            raise NotFound(detail=f"No post found for {slug}")
+        
+        serialized_post = PostSerializer(post, context={'request': request}).data
+
+        return self.response(serialized_post)
+    
 
 class PostAuthorViews(StandardAPIView):
     permission_classes = [HasValidAPIKey, permissions.IsAuthenticated]
@@ -77,14 +139,16 @@ class PostAuthorViews(StandardAPIView):
         title = sanitize_string(request.data.get('title', None))
         description = sanitize_string(request.data.get('description', ""))
         content = sanitize_html(request.data.get('content', None))        
+        post_status = sanitize_string(request.data.get('status', 'draft'))        
 
         # Thumbnail params
-        thumbnail_order = request.data.get("thumbnail_order", None)
         thumbnail_name = request.data.get("thumbnail_name", None)
         thumbnail_size = request.data.get("thumbnail_size", None)
         thumbnail_type = request.data.get("thumbnail_type", None)
         thumbnail_key = request.data.get("thumbnail_key", None)
-        thumbnail_media_type = request.data.get("thumbnail_media_type", None)
+        thumbnail_order = request.data.get("thumbnail_order", 0)
+        thumbnail_media_type = request.data.get("thumbnail_media_type", 'image')
+
         # Other params
         keywords = sanitize_string(request.data.get("keywords", ""))
         slug = slugify(request.data.get("slug", None))
@@ -107,6 +171,7 @@ class PostAuthorViews(StandardAPIView):
                 keywords=keywords,
                 slug=slug,
                 category=category,
+                status=post_status
             )
 
             if thumbnail_key:
@@ -122,21 +187,27 @@ class PostAuthorViews(StandardAPIView):
                 post.thumbnail = thumbnail
                 post.save()
 
-            # Crear encabezado (heading)
-            headings = request.data.get("headings", [])
-            for heading_data in headings:
+            # Procesar encabezados dinámicamente desde el contenido HTML
+            soup = BeautifulSoup(content, "html.parser")
+            headings = soup.find_all(["h1", "h2", "h3", "h4", "h5", "h6"])
+            
+            for order, heading in enumerate(headings, start=1):
+                level = int(heading.name[1])  # Extract the level from 'h1', 'h2', etc.
                 Heading.objects.create(
                     post=post,
-                    title=heading_data.get('title'),
-                    slug=heading_data.get('slug'),
-                    level=heading_data.get('level'),
-                    order=heading_data.get('order'),
+                    title=heading.get_text(strip=True),
+                    slug=slugify(heading.get_text(strip=True)),
+                    level=level,
+                    order=order,
                 )
 
         except Exception as e:
             return self.error(f"An error occurred: {str(e)}")
         
-        return self.response(f"Post '{post.title}' created successfully. It will be showed in a few minutes")
+        return self.response(
+            f"Post '{post.title}' created successfully. It will be showed in a few minutes",
+            status=status.HTTP_201_CREATED
+        )
 
     def put(self, request):
         """
@@ -144,79 +215,83 @@ class PostAuthorViews(StandardAPIView):
         """
         user = request.user
         if user.role == 'customer':
-            return self.error("You do not have permission to create posts")
+            return self.error("You do not have permission to edit posts")
         
         post_slug = request.data.get("post_slug", None)
-        if not post_slug:
-            raise NotFound(detail="Post slug must be provided.")
-        
-        try:
-            post = Post.objects.get(slug=post_slug, user=user)
-        except Post.DoesNotExist:
-            raise NotFound(f"Post {post_slug} does not exist.")
-        
-        # Obtener parametros
         title = sanitize_string(request.data.get('title', None))
-        description = sanitize_string(request.data.get('description', None))
-        content = sanitize_html(request.data.get('content', None))
-        post_status = sanitize_string(request.data.get('status', 'draft'))
-        category_slug = slugify(request.data.get("category", post.category.slug))
-        # Thumbnail params
-        thumbnail_order = request.data.get("thumbnail_order", None)
+        description = sanitize_string(request.data.get('description', ""))
+        content = sanitize_html(request.data.get('content', None))        
+        post_status = sanitize_string(request.data.get('status', 'draft'))   
+        keywords = sanitize_string(request.data.get('keywords', ""))
+        slug = slugify(request.data.get("slug", None))
+        category_slug = slugify(request.data.get("category", None))
+
         thumbnail_name = request.data.get("thumbnail_name", None)
         thumbnail_size = request.data.get("thumbnail_size", None)
         thumbnail_type = request.data.get("thumbnail_type", None)
         thumbnail_key = request.data.get("thumbnail_key", None)
-        thumbnail_media_type = request.data.get("thumbnail_media_type", None)
+        thumbnail_order = request.data.get("thumbnail_order", 0)
+        thumbnail_media_type = request.data.get("thumbnail_media_type", 'image')
 
-        # Validar existencia de la categoría
-        if category_slug:
-            try:
-                category = Category.objects.get(slug=category_slug)
-            except Category.DoesNotExist:
-                return self.error(
-                    f"Category '{category_slug}' does not exist.", status=400
-                )
-            post.category = category
-
-        if title:
-            post.title = title
-
-        if description:
-            post.description = description
-
-        if content:
-            post.content = content
+        try:
+            post = Post.objects.get(slug=post_slug, user=user)
+        except Post.DoesNotExist:
+            raise NotFound(detail=f"Post {post_slug} does not exist")
+        
+        try:
+            category = Category.objects.get(slug=category_slug)
+        except Category.DoesNotExist:
+            return self.error(
+                f"Category '{category_slug}' does not exist.", status=400
+            )
+        
+        # Verificar si el slug ya existe en otro post
+        existing_post = Post.objects.filter(slug=slug).exclude(id=post.id).first()
+        if existing_post:
+            return self.error(f"The slug '{slug}' is already in use by another post")
+        
+        post.title=title
+        post.description = description
+        post.content = content
+        post.status = post_status
+        post.keywords = keywords
+        post.slug = slug
+        post.category=category
 
         if thumbnail_key:
-                thumbnail = Media.objects.create(
-                    order=thumbnail_order,
-                    name=thumbnail_name,
-                    size=thumbnail_size,
-                    type=thumbnail_type,
-                    key=thumbnail_key,
-                    media_type=thumbnail_media_type
-                )
+            thumbnail = Media.objects.create(
+                order=thumbnail_order,
+                name=thumbnail_name,
+                size=thumbnail_size,
+                type=thumbnail_type,
+                key=thumbnail_key,
+                media_type=thumbnail_media_type
+            )
 
-                post.thumbnail = thumbnail
-                
-        post.status = post_status
+            post.thumbnail = thumbnail
 
-        # Actualizar encabezados (headings)
-        headings = request.data.get("headings", [])
-        if headings:
-            post.headings.all().delete()  # Eliminar encabezados existentes
-            for heading_data in headings:
-                Heading.objects.create(
-                    post=post,
-                    title=heading_data.get("title"),
-                    level=heading_data.get("level"),
-                    order=heading_data.get("order"),
-                )
+        # Procesar encabezados dinámicamente desde el contenido HTML
+        soup = BeautifulSoup(content, "html.parser")
+        headings = soup.find_all(["h1", "h2", "h3", "h4", "h5", "h6"])
+
+        # Borrar los headings actuales del post
+        Heading.objects.filter(post=post).delete()
+        
+        for order, heading in enumerate(headings, start=1):
+            level = int(heading.name[1])  # Extract the level from 'h1', 'h2', etc.
+            Heading.objects.create(
+                post=post,
+                title=heading.get_text(strip=True),
+                slug=slugify(heading.get_text(strip=True)),
+                level=level,
+                order=order,
+            )
 
         post.save()
 
-        return self.response(f"Post {post.title} edited successfully. Changes will be processed in a few minutes")
+        serialized_post = PostSerializer(post, context={'request': request}).data
+
+        return self.response(serialized_post)
 
     def delete(self, request):
         """
@@ -237,8 +312,30 @@ class PostAuthorViews(StandardAPIView):
             raise NotFound(f"Post {post_slug} does not exist.")
         
         post.delete()
+
+        # Invalidar caché relacionado con este post
+        self._invalidate_post_list_cache()
+        self._invalidate_post_detail_cache(post_slug)
         
         return self.response(f"Post with slug {post_slug} deleted successully.")
+
+    def _invalidate_post_list_cache(self):
+        """
+        Invalida las claves de caché relacionadas con la lista de posts.
+        """
+        # Obtén todas las claves de caché activas relacionadas con los posts
+        cache_keys = cache.keys("post_list:*")  # Asume que todas las claves inician con 'post_list:'
+
+        # Eliminar todas las claves relacionadas
+        for key in cache_keys:
+            cache.delete(key)
+    
+    def _invalidate_post_detail_cache(self, slug):
+        """
+        Invalida el cache del post.
+        """
+        cache_key = f"post_detail:{slug}"
+        cache.delete(cache_key)
 
 
 class PostListView(StandardAPIView):
@@ -251,11 +348,12 @@ class PostListView(StandardAPIView):
             sorting = request.query_params.get("sorting", None)
             ordering = request.query_params.get("ordering", None)
             author = request.query_params.get("author", None)
-            categories = request.query_params.getlist("category", [])
+            is_featured = request.query_params.get("is_featured", None)
+            categories = request.query_params.getlist("categories", [])
             page = request.query_params.get("p", "1")
 
             # Construir clave de cache para resultados paginados
-            cache_key = f"post_list:{search}:{sorting}:{ordering}:{author}:{categories}:{page}"
+            cache_key = f"post_list:{search}:{sorting}:{ordering}:{author}:{categories}:{is_featured}:{page}"
             cached_posts = cache.get(cache_key)
             if cached_posts:
                 # Serializar los datos del caché
@@ -265,13 +363,21 @@ class PostListView(StandardAPIView):
                     redis_client.incr(f"post:impressions:{post.id}")  # Usar `post.id`
                 return self.paginate(request, serialized_posts)
 
-            # Consulta inicial optimizada
-            posts = Post.postobjects.all().select_related("category").prefetch_related(
-                Prefetch("post_analytics", to_attr="analytics_cache")
+            # Consulta inicial optimizada con nombres de anotación únicos
+            posts = Post.postobjects.all().select_related("category").annotate(
+                analytics_views=Coalesce(F("post_analytics__views"), Value(0)),
+                analytics_likes=Coalesce(F("post_analytics__likes"), Value(0)),
+                analytics_comments=Coalesce(F("post_analytics__comments"), Value(0)),
+                analytics_shares=Coalesce(F("post_analytics__shares"), Value(0)),
             )
+            
+            # Filtrar por autor
+            if author:
+                posts = posts.filter(user__username=author)
 
+            # Si no hay posts del autor, responder inmediatamente
             if not posts.exists():
-                raise NotFound(detail="No posts found.")
+                raise NotFound(detail=f"No posts found for author: {author}")
             
             # Filtrar por busqueda
             if search:
@@ -279,13 +385,10 @@ class PostListView(StandardAPIView):
                     Q(title__icontains=search) |
                     Q(description__icontains=search) |
                     Q(content__icontains=search) |
-                    Q(keywords__icontains=search) 
+                    Q(keywords__icontains=search) |
+                    Q(category__name__icontains=search)
                 )
             
-            # Filtrar por autor
-            if author:
-                posts = posts.filter(user__username=author)
-
             # Filtrar por categoria
             if categories:
                 category_queries = Q()
@@ -304,20 +407,26 @@ class PostListView(StandardAPIView):
                         category_queries |= slug_query
                 posts = posts.filter(category_queries)
             
+            # Filtrar por posts destacados
+            if is_featured:
+                # Convertir el valor del parámetro a booleano
+                is_featured = is_featured.lower() in ['true', '1', 'yes']
+                posts = posts.filter(featured=is_featured)
+            
             # Ordenamiento
             if sorting:
-                if sorting == 'newest':
+                if sorting == "newest":
                     posts = posts.order_by("-created_at")
-                elif sorting == 'recently_updated':
-                    posts = posts.order_by("-updated_at")
-                elif sorting == 'most_viewed':
-                    posts = posts.annotate(popularity=F("analytics_cache__views")).order_by("-popularity")
-
-            if ordering:
-                if ordering == 'az':
+                elif sorting == 'az':
                     posts = posts.order_by("title")
-                if ordering == 'za':
+                elif sorting == 'za':
                     posts = posts.order_by("-title")
+                elif sorting == "recently_updated":
+                    posts = posts.order_by("-updated_at")
+                elif sorting == "most_viewed":
+                    posts = posts.order_by("-analytics_views") 
+
+            # if ordering:
 
             # Guardar los objetos en el caché
             cache.set(cache_key, posts, timeout=60 * 5)
@@ -330,6 +439,8 @@ class PostListView(StandardAPIView):
                 redis_client.incr(f"post:impressions:{post.id}")  # Usar `post.id`
 
             return self.paginate(request, serialized_posts)
+        except NotFound as e:
+            return self.response([], status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
             raise APIException(detail=f"An unexpected error occurred: {str(e)}")
 

@@ -124,8 +124,10 @@ class Post(models.Model):
         null=True
     )
 
+    featured = models.BooleanField(default=False)
+
     keywords = models.CharField(max_length=128)
-    slug = models.CharField(max_length=128)
+    slug = models.CharField(max_length=128, unique=True)
 
     category = models.ForeignKey(Category, on_delete=models.PROTECT)
 

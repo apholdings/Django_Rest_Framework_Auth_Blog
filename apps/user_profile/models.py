@@ -37,15 +37,15 @@ class UserProfile(models.Model):
     biography = RichTextField()
     birthday = models.DateField(blank=True, null=True)
 
-    website = models.URLField(blank=True, null=True)
-    instagram = models.URLField(blank=True, null=True)
-    facebook = models.URLField(blank=True, null=True)
-    threads = models.URLField(blank=True, null=True)
-    linkedin = models.URLField(blank=True, null=True)
-    youtube = models.URLField(blank=True, null=True)
-    tiktok = models.URLField(blank=True, null=True)
-    github = models.URLField(blank=True, null=True)
-    gitlab = models.URLField(blank=True, null=True)
+    website = models.URLField(blank=True, default='')
+    instagram = models.URLField(blank=True, default='')
+    facebook = models.URLField(blank=True, default='')
+    threads = models.URLField(blank=True, default='')
+    linkedin = models.URLField(blank=True, default='')
+    youtube = models.URLField(blank=True, default='')
+    tiktok = models.URLField(blank=True, default='')
+    github = models.URLField(blank=True, default='')
+    gitlab = models.URLField(blank=True, default='')
 
     def profile_picture_preview(self):
         if self.profile_picture:
